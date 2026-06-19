@@ -1103,15 +1103,17 @@ def init_agent(
     agent._memory_store = None
     agent._memory_enabled = False
     agent._user_profile_enabled = False
-    agent._memory_nudge_interval = 10
+    agent._memory_nudge_interval = 5
     agent._turns_since_memory = 0
     agent._iters_since_skill = 0
+    agent._vault_nudge_interval = 10
+    agent._turns_since_vault = 0
     if not skip_memory:
         try:
             mem_config = _agent_cfg.get("memory", {})
             agent._memory_enabled = mem_config.get("memory_enabled", False)
             agent._user_profile_enabled = mem_config.get("user_profile_enabled", False)
-            agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
+            agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 5))
             if agent._memory_enabled or agent._user_profile_enabled:
                 from tools.memory_tool import MemoryStore
                 agent._memory_store = MemoryStore(
@@ -1223,7 +1225,7 @@ def init_agent(
                 _existing_tool_names.add(_tname)
 
     # Skills config: nudge interval for skill creation reminders
-    agent._skill_nudge_interval = 10
+    agent._skill_nudge_interval = 0
     try:
         skills_config = _agent_cfg.get("skills", {})
         agent._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 10))
