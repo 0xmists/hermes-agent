@@ -406,7 +406,7 @@ def summarize_background_review_actions(
                         label = "Goals"
                     elif top in ("SOUL.md", "SOUL-voice.md", "SOUL-workflow.md"):
                         label = "SOUL"
-                    action = f"{label} updated"
+                    action = f"{rel} updated"
                     if action not in actions:
                         actions.append(action)
                     break  # one action per tool call
