@@ -323,6 +323,20 @@ def summarize_background_review_actions(
             if isinstance(content, str):
                 existing_tool_contents.add(content)
 
+    # Build a map of tool_call_id -> tool_name from assistant messages
+    # so we can identify write_file / patch calls even when the tool
+    # result JSON has no "message" or "success" field.
+    tool_names: Dict[str, str] = {}
+    for msg in review_messages or []:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        for tc in msg.get("tool_calls", []) or []:
+            fn = tc.get("function", {})
+            tcid = tc.get("id") or tc.get("tool_call_id")
+            name = fn.get("name", "")
+            if tcid and name:
+                tool_names[tcid] = name
+
     actions: List[str] = []
     for msg in review_messages or []:
         if not isinstance(msg, dict) or msg.get("role") != "tool":
@@ -338,7 +352,68 @@ def summarize_background_review_actions(
             data = json.loads(msg.get("content", "{}"))
         except (json.JSONDecodeError, TypeError):
             continue
-        if not isinstance(data, dict) or not data.get("success"):
+        if not isinstance(data, dict):
+            continue
+
+        # Determine tool name from the call map, fallback to JSON fields
+        tool_name = tool_names.get(tcid or "", "")
+
+        # --- Vault write detection (write_file / patch) ---
+        if tool_name in ("write_file", "patch"):
+            # Collect target paths from the tool result
+            paths: List[str] = []
+            # write_file returns files_modified
+            for p in data.get("files_modified") or []:
+                paths.append(p)
+            # Also check top-level path (write_file result)
+            if data.get("path"):
+                paths.append(data["path"])
+            # Check arguments from the tool call for the path
+            if not paths:
+                tc_args = ""
+                for amsg in review_messages or []:
+                    if not isinstance(amsg, dict) or amsg.get("role") != "assistant":
+                        continue
+                    for tc in amsg.get("tool_calls", []) or []:
+                        if (tc.get("id") or tc.get("tool_call_id")) == tcid:
+                            tc_args = tc.get("function", {}).get("arguments", "")
+                            break
+                if tc_args:
+                    try:
+                        args_data = json.loads(tc_args)
+                        if args_data.get("path"):
+                            paths.append(args_data["path"])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+            vault_path = "/storage/emulated/0/HermesVault/"
+            for p in paths:
+                if vault_path in p:
+                    # Extract human-readable filename
+                    rel = p.replace(vault_path, "")
+                    label = "Vault"
+                    # Subfolder context
+                    top = rel.split("/")[0] if "/" in rel else ""
+                    if top == "Behavior":
+                        label = "Behavior"
+                    elif top == "Lessons":
+                        label = "Lessons"
+                    elif top == "Reflections":
+                        label = "Reflections"
+                    elif top == "Projects":
+                        label = "Projects"
+                    elif top == "Goals":
+                        label = "Goals"
+                    elif top in ("SOUL.md", "SOUL-voice.md", "SOUL-workflow.md"):
+                        label = "SOUL"
+                    action = f"{label} updated"
+                    if action not in actions:
+                        actions.append(action)
+                    break  # one action per tool call
+            continue  # handled, skip memory keyword checks below
+
+        # --- Memory / skill tool detection (existing logic) ---
+        if not data.get("success"):
             continue
         message = data.get("message", "")
         target = data.get("target", "")
@@ -520,7 +595,7 @@ def _run_review_in_thread(
             review_whitelist = {
                 t["function"]["name"]
                 for t in get_tool_definitions(
-                    enabled_toolsets=["memory", "skills"],
+                    enabled_toolsets=["memory", "skills", "file"],
                     quiet_mode=True,
                 )
             }
@@ -528,16 +603,14 @@ def _run_review_in_thread(
                 review_whitelist,
                 deny_msg_fmt=(
                     "Background review denied non-whitelisted tool: "
-                    "{tool_name}. Only memory/skill tools are allowed."
+                    "{tool_name}. Only memory/skill/file tools are allowed."
                 ),
             )
             try:
                 review_agent.run_conversation(
                     user_message=(
                         prompt
-                        + "\n\nYou can only call memory and skill "
-                        "management tools. Other tools will be denied "
-                        "at runtime — do not attempt them."
+                        + "\n\nYou can call memory, skill, and file management tools. "
                     ),
                     conversation_history=messages_snapshot,
                 )
